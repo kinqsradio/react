@@ -81,8 +81,11 @@ describe('forwardRef', () => {
   });
 
   it('should use new props from the parent and support reusing an earlier element', async () => {
+    let setCount;
     const receivedProps = [];
     const Component = React.forwardRef((props, ref) => {
+      const [, update] = React.useState(0);
+      setCount = update;
       receivedProps.push(props);
       React.useMemo(() => {
         Scheduler.log('Memo: ' + props.label);
@@ -111,7 +114,13 @@ describe('forwardRef', () => {
     ReactNoop.render(firstElement);
     await waitForAll(['Memo: first']);
     expect(ReactNoop).toMatchRenderedOutput('first');
-    expect(receivedProps[3]).toBe(receivedProps[0]);
+    expect(receivedProps[3]).not.toBe(receivedProps[2]);
+    expect(receivedProps[3]).not.toHaveProperty('ref');
+    // Historical inputs need not keep their old cached copy alive. Once the
+    // earlier element is current again, state updates should reuse its props.
+    setCount(1);
+    await waitForAll([]);
+    expect(receivedProps[4]).toBe(receivedProps[3]);
   });
 
   it('should preserve props for state updates inside memo and update changed refs', async () => {
@@ -268,6 +277,111 @@ describe('forwardRef', () => {
     expect(root).toMatchRenderedOutput('last: 1');
     expect(committedProps[committedProps.length - 1]).not.toBe(initialProps);
     expect(initialProps.label).toBe('first');
+  });
+
+  it('should update render props when ref is added and removed', async () => {
+    let setCount;
+    const receivedProps = [];
+    const Component = React.forwardRef((props, ref) => {
+      const [count, update] = React.useState(0);
+      setCount = update;
+      receivedProps.push(props);
+      return props.label + ': ' + count;
+    });
+    const root = ReactNoop.createRoot();
+    const inputs = [
+      {label: 'omitted'},
+      {label: 'present', ref: null},
+      {label: 'omitted again'},
+    ];
+    let previousProps;
+    for (let index = 0; index < inputs.length; index++) {
+      const element = React.createElement(Component, inputs[index]);
+      await act(() => root.render(element));
+      const props = receivedProps[receivedProps.length - 1];
+      expect(props).not.toBe(previousProps);
+      expect(props).not.toHaveProperty('ref');
+      await act(() => setCount(index + 1));
+      expect(receivedProps[receivedProps.length - 1]).toBe(props);
+      expect(root).toMatchRenderedOutput(
+        inputs[index].label + ': ' + (index + 1),
+      );
+      previousProps = props;
+    }
+  });
+
+  it('should preserve props after alternating early bailouts', async () => {
+    let setCount;
+    const receivedProps = [];
+    const Component = React.forwardRef((props, ref) => {
+      const [count, update] = React.useState(0);
+      setCount = update;
+      receivedProps.push(props);
+      return props.label + ': ' + count;
+    });
+    let element = <Component ref={null} label="previous" />;
+    function Parent() {
+      return element;
+    }
+    const root = ReactNoop.createRoot();
+
+    await act(() => root.render(<Parent tick={0} />));
+    receivedProps.length = 0;
+    element = <Component ref={null} label="stable" />;
+    await act(() => root.render(<Parent tick={1} />));
+    const initialProps = receivedProps[0];
+    for (let count = 1; count <= 3; count++) {
+      // The parent renders new props but reuses the child element, so the
+      // ForwardRef itself takes the early bailout path on its alternate.
+      await act(() => root.render(<Parent tick={count + 1} />));
+      expect(receivedProps).toHaveLength(count);
+      await act(() => setCount(count));
+      expect(receivedProps[count]).toBe(initialProps);
+      expect(root).toMatchRenderedOutput('stable: ' + count);
+    }
+  });
+
+  it('should preserve new props while replaying an update that suspends', async () => {
+    let setCount;
+    const receivedProps = [];
+    const Component = React.forwardRef((props, ref) => {
+      const [count, update] = React.useState(0);
+      setCount = update;
+      receivedProps.push(props);
+      const value = React.use(props.promise);
+      return props.label + ': ' + value + ': ' + count;
+    });
+    const root = ReactNoop.createRoot();
+    await act(() => {
+      root.render(
+        <Component ref={null} label="first" promise={Promise.resolve('A')} />,
+      );
+    });
+    const firstProps = receivedProps[receivedProps.length - 1];
+    receivedProps.length = 0;
+
+    await act(() => {
+      React.startTransition(() =>
+        root.render(
+          <Component
+            ref={null}
+            label="second"
+            promise={Promise.resolve('B')}
+          />,
+        ),
+      );
+    });
+    expect(root).toMatchRenderedOutput('second: B: 0');
+    expect(receivedProps.length).toBeGreaterThan(1);
+    const secondProps = receivedProps[0];
+    expect(secondProps).not.toBe(firstProps);
+    await act(() => setCount(1));
+    expect(root).toMatchRenderedOutput('second: B: 1');
+    receivedProps.forEach(props => {
+      expect(props).toBe(secondProps);
+      expect(props).not.toHaveProperty('ref');
+    });
+    expect(firstProps.label).toBe('first');
   });
 
   it('should work without a ref to be forwarded', async () => {

@@ -315,11 +315,6 @@ export const SelectiveHydrationException: mixed = new Error(
 
 let didReceiveUpdate: boolean = false;
 
-// Props are immutable, so the same input can reuse the copy without `ref`.
-// Keep this keyed by props rather than Fiber so retries and state updates see
-// the same object without retaining props after they are no longer used.
-const forwardRefPropsCache: WeakMap<any, any> = new WeakMap();
-
 let didWarnAboutBadClass;
 let didWarnAboutContextTypeOnFunctionComponent;
 let didWarnAboutContextTypes;
@@ -405,32 +400,6 @@ function forceUnmountCurrentAndReconcile(
   );
 }
 
-function resolveForwardRefProps(nextProps: any): any {
-  let propsWithoutRef;
-  if ('ref' in nextProps) {
-    // `ref` is just a prop now, but `forwardRef` expects it to not appear in
-    // the props object. This used to happen in the JSX runtime, but now we do
-    // it here.
-    propsWithoutRef = forwardRefPropsCache.get(nextProps);
-    if (propsWithoutRef === undefined) {
-      propsWithoutRef = {} as {[string]: any};
-      for (const key in nextProps) {
-        // Since `ref` should only appear in props via the JSX transform, we can
-        // assume that this is a plain object. So we don't need a
-        // hasOwnProperty check.
-        if (key !== 'ref') {
-          propsWithoutRef[key] = nextProps[key];
-        }
-      }
-      forwardRefPropsCache.set(nextProps, propsWithoutRef);
-    }
-  } else {
-    propsWithoutRef = nextProps;
-  }
-
-  return propsWithoutRef;
-}
-
 function updateForwardRef(
   current: Fiber | null,
   workInProgress: Fiber,
@@ -453,7 +422,33 @@ function updateForwardRef(
   }
   const ref = workInProgress.ref;
 
-  const propsWithoutRef = resolveForwardRefProps(nextProps);
+  let propsWithoutRef;
+  if ('ref' in nextProps) {
+    // `ref` is just a prop now, but `forwardRef` expects it to not appear in
+    // the props object. Keep the copy on this Fiber so state updates can reuse
+    // it without keeping a global cache of previous inputs.
+    if (
+      current !== null &&
+      current.memoizedProps === nextProps &&
+      current.stateNode !== null
+    ) {
+      propsWithoutRef = current.stateNode;
+    } else {
+      propsWithoutRef = {} as {[string]: any};
+      for (const key in nextProps) {
+        // Since `ref` should only appear in props via the JSX transform, we can
+        // assume that this is a plain object. So we don't need a
+        // hasOwnProperty check.
+        if (key !== 'ref') {
+          propsWithoutRef[key] = nextProps[key];
+        }
+      }
+    }
+    workInProgress.stateNode = propsWithoutRef;
+  } else {
+    propsWithoutRef = nextProps;
+    workInProgress.stateNode = null;
+  }
 
   // The rest is a fork of updateFunctionComponent
   prepareToReadContext(workInProgress, renderLanes);
@@ -1585,8 +1580,9 @@ export function replayFunctionComponent(
   // after its data resolves. It's a simplified version of
   // updateFunctionComponent that reuses the hooks from the previous attempt.
 
-  if (workInProgress.tag === ForwardRef) {
-    nextProps = resolveForwardRefProps(nextProps);
+  if (workInProgress.tag === ForwardRef && 'ref' in nextProps) {
+    // The suspended attempt already prepared the props without `ref`.
+    nextProps = workInProgress.stateNode;
   }
 
   prepareToReadContext(workInProgress, renderLanes);

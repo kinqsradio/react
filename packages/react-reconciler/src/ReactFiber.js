@@ -388,6 +388,11 @@ export function createWorkInProgress(current: Fiber, pendingProps: any): Fiber {
   workInProgress.memoizedProps = current.memoizedProps;
   workInProgress.memoizedState = current.memoizedState;
   workInProgress.updateQueue = current.updateQueue;
+  if (current.tag === ForwardRef) {
+    // ForwardRef uses stateNode for its memoized render props. Keep them paired
+    // with memoizedProps, including when this Fiber bails out without rendering.
+    workInProgress.stateNode = current.stateNode;
+  }
 
   // Clone the dependencies object. This is mutated during the render phase, so
   // it cannot be shared with the current fiber.
@@ -488,6 +493,9 @@ export function resetWorkInProgress(
     workInProgress.memoizedProps = current.memoizedProps;
     workInProgress.memoizedState = current.memoizedState;
     workInProgress.updateQueue = current.updateQueue;
+    if (current.tag === ForwardRef) {
+      workInProgress.stateNode = current.stateNode;
+    }
     // Needed because Blocks store data on type.
     // TODO: Blocks don't exist anymore. Do we still need this?
     workInProgress.type = current.type;
