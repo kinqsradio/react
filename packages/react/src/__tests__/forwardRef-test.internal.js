@@ -384,6 +384,38 @@ describe('forwardRef', () => {
     expect(firstProps.label).toBe('first');
   });
 
+  it('should keep user props out of legacy instance fields', async () => {
+    const context = {label: 'ordinary prop'};
+    const measure = jest.fn();
+    const setNativeProps = jest.fn();
+    const Component = React.forwardRef((props, ref) => {
+      expect(props.context).toBe(context);
+      expect(props.measure).toBe(measure);
+      expect(props.setNativeProps).toBe(setNativeProps);
+      return null;
+    });
+    await act(() => {
+      ReactNoop.render(
+        <Component
+          ref={null}
+          context={context}
+          measure={measure}
+          setNativeProps={setNativeProps}
+        />,
+      );
+    });
+    // Older DevTools backends read these instance fields directly. ForwardRef
+    // props must not become legacy context or native instance methods.
+    const legacyInstance = ReactNoop.getRoot().current.child.stateNode;
+    if (legacyInstance !== null) {
+      expect(legacyInstance.context).toBe(undefined);
+      expect(legacyInstance.measure).toBe(undefined);
+      expect(legacyInstance.setNativeProps).toBe(undefined);
+    }
+    expect(measure).not.toHaveBeenCalled();
+    expect(setNativeProps).not.toHaveBeenCalled();
+  });
+
   it('should work without a ref to be forwarded', async () => {
     class Child extends React.Component {
       render() {
@@ -582,5 +614,55 @@ describe('forwardRef', () => {
 
     inst.setState({});
     await waitForAll(['Inner']);
+  });
+});
+
+describe('forwardRef legacy Suspense recovery', () => {
+  ['present', 'omitted'].forEach(suspendedRef => {
+    it(
+      'restores committed render props after suspending with ' +
+        suspendedRef +
+        ' ref',
+      async () => {
+        jest.resetModules();
+        const flags = require('shared/ReactFeatureFlags');
+        flags.disableLegacyMode = false;
+        const React = require('react');
+        const ReactNoop = require('react-noop-renderer');
+        const {act} = require('internal-test-utils');
+        const pending = new Promise(() => {});
+        const seen = [];
+        let setCount;
+        const Component = React.forwardRef((props, ref) => {
+          const [count, update] = React.useState(0);
+          setCount = update;
+          seen.push(props);
+          if (props.suspend) {
+            throw pending;
+          }
+          return <span>{props.label + ': ' + count}</span>;
+        });
+        const first = <Component ref={null} label="first" suspend={false} />;
+        const suspended = React.createElement(Component, {
+          label: 'suspended',
+          suspend: true,
+          ...(suspendedRef === 'present' ? {ref: null} : {}),
+        });
+        const root = ReactNoop.createLegacyRoot();
+        function render(element) {
+          return <React.Suspense fallback="Loading">{element}</React.Suspense>;
+        }
+        await act(() => root.render(render(first)));
+        const committedProps = seen[0];
+        await act(() => root.render(render(suspended)));
+        expect(seen.some(props => props.label === 'suspended')).toBe(true);
+        await act(() => root.render(render(first)));
+        expect(root).toMatchRenderedOutput(<span>first: 0</span>);
+        expect(seen[seen.length - 1]).toBe(committedProps);
+        await act(() => setCount(1));
+        expect(root).toMatchRenderedOutput(<span>first: 1</span>);
+        expect(seen[seen.length - 1]).toBe(committedProps);
+      },
+    );
   });
 });

@@ -432,7 +432,7 @@ function updateForwardRef(
       current.memoizedProps === nextProps &&
       current.stateNode !== null
     ) {
-      propsWithoutRef = current.stateNode;
+      propsWithoutRef = current.stateNode.propsWithoutRef;
     } else {
       propsWithoutRef = {} as {[string]: any};
       for (const key in nextProps) {
@@ -444,7 +444,17 @@ function updateForwardRef(
         }
       }
     }
-    workInProgress.stateNode = propsWithoutRef;
+    // Keep user props inside the cache box: older DevTools backends interpret
+    // fields such as stateNode.context and stateNode.measure as instance APIs.
+    const stateNode = workInProgress.stateNode;
+    if (
+      stateNode === null ||
+      (current !== null && stateNode === current.stateNode)
+    ) {
+      workInProgress.stateNode = {propsWithoutRef};
+    } else {
+      stateNode.propsWithoutRef = propsWithoutRef;
+    }
   } else {
     propsWithoutRef = nextProps;
     workInProgress.stateNode = null;
@@ -1582,7 +1592,7 @@ export function replayFunctionComponent(
 
   if (workInProgress.tag === ForwardRef && 'ref' in nextProps) {
     // The suspended attempt already prepared the props without `ref`.
-    nextProps = workInProgress.stateNode;
+    nextProps = workInProgress.stateNode.propsWithoutRef;
   }
 
   prepareToReadContext(workInProgress, renderLanes);
